@@ -7,10 +7,11 @@ use ai_gateway::{
         rate_limit::{
             GcraConfig, GlobalRateLimitConfig, LimitsConfig, RateLimitStore,
         },
+        redis::RedisConfig,
         router::{RouterConfig, RouterConfigs, RouterRateLimitConfig},
     },
     tests::{TestDefault, harness::Harness, mock::MockArgs},
-    types::router::RouterId,
+    types::{router::RouterId, secret::Secret},
 };
 use compact_str::CompactString;
 use http::{Method, Request, StatusCode};
@@ -115,6 +116,8 @@ async fn make_chat_request_for_router(
     response
 }
 
+const REDIS_URL: &str = "redis://localhost:6340";
+
 // Test 1: Global rate limiting with router that doesn't override
 #[tokio::test]
 #[serial_test::serial]
@@ -122,11 +125,14 @@ async fn test_global_rate_limit_with_router_none() {
     let mut config = Config::test_default();
     config.helicone.features = HeliconeFeatures::All;
     config.global.rate_limit = Some(GlobalRateLimitConfig {
-        // 3 requests per second
+        // 3 requests per 5 seconds
         limits: Some(create_test_limits(3, 1000)),
         cleanup_interval: Duration::from_secs(60),
     });
-    config.rate_limit_store = RateLimitStore::InMemory;
+    config.rate_limit_store = RateLimitStore::Redis(RedisConfig {
+        host_url: Secret::from(REDIS_URL.parse::<url::Url>().unwrap()),
+        connection_timeout: Duration::from_secs(10),
+    });
 
     // Router doesn't override rate limiting
     config.routers = RouterConfigs::new(HashMap::from([(
@@ -149,11 +155,11 @@ async fn test_global_rate_limit_with_router_none() {
         .with_mock_auth()
         .build()
         .await;
-
     let auth_header = "Bearer sk-helicone-test-key";
 
     // The user should be able to make 3 requests successfully (capacity = 3)
     for i in 1..=3 {
+        println!("making request {i}");
         let response = make_chat_request(&mut harness, auth_header).await;
         assert_eq!(
             response.status(),
@@ -198,14 +204,22 @@ async fn test_router_specific_with_custom_limits() {
         limits: None,
         cleanup_interval: Duration::from_secs(60),
     });
-    config.rate_limit_store = RateLimitStore::InMemory;
+    config.rate_limit_store = RateLimitStore::Redis(RedisConfig {
+        host_url: Secret::from(REDIS_URL.parse::<url::Url>().unwrap()),
+        connection_timeout: Duration::from_secs(1),
+    });
 
     // Router provides its own custom rate limits
     config.routers = RouterConfigs::new(HashMap::from([(
         RouterId::Default,
         RouterConfig {
             rate_limit: RouterRateLimitConfig::Custom {
-                store: Some(RateLimitStore::InMemory),
+                store: Some(RateLimitStore::Redis(RedisConfig {
+                    host_url: Secret::from(
+                        REDIS_URL.parse::<url::Url>().unwrap(),
+                    ),
+                    connection_timeout: Duration::from_secs(1),
+                })),
                 limits: create_test_limits(2, 1000), // 2 requests per second
             },
             load_balance:
@@ -265,13 +279,22 @@ async fn test_global_with_custom_router_override() {
         limits: Some(create_test_limits(5, 1000)),
         cleanup_interval: Duration::from_secs(60),
     });
-    config.rate_limit_store = RateLimitStore::InMemory;
+    config.rate_limit_store = RateLimitStore::Redis(RedisConfig {
+        host_url: Secret::from(REDIS_URL.parse::<url::Url>().unwrap()),
+        connection_timeout: Duration::from_secs(1),
+    });
+
     // Router overrides with stricter custom limits
     config.routers = RouterConfigs::new(HashMap::from([(
         RouterId::Default,
         RouterConfig {
             rate_limit: RouterRateLimitConfig::Custom {
-                store: Some(RateLimitStore::InMemory),
+                store: Some(RateLimitStore::Redis(RedisConfig {
+                    host_url: Secret::from(
+                        REDIS_URL.parse::<url::Url>().unwrap(),
+                    ),
+                    connection_timeout: Duration::from_secs(1),
+                })),
                 limits: create_test_limits(2, 1000), /* 2 requests per second
                                                       * for this router */
             },
@@ -330,7 +353,11 @@ async fn test_router_independence_different_rate_limits() {
         limits: None,
         cleanup_interval: Duration::from_secs(60),
     });
-    config.rate_limit_store = RateLimitStore::InMemory;
+    config.rate_limit_store = RateLimitStore::Redis(RedisConfig {
+        host_url: Secret::from(REDIS_URL.parse::<url::Url>().unwrap()),
+        connection_timeout: Duration::from_secs(1),
+    });
+
     let strict_router_id = RouterId::Named(CompactString::from("strict"));
     let lenient_router_id = RouterId::Named(CompactString::from("lenient"));
 
@@ -340,7 +367,12 @@ async fn test_router_independence_different_rate_limits() {
             strict_router_id.clone(),
             RouterConfig {
                 rate_limit: RouterRateLimitConfig::Custom {
-                    store: Some(RateLimitStore::InMemory),
+                    store: Some(RateLimitStore::Redis(RedisConfig {
+                        host_url: Secret::from(
+                            REDIS_URL.parse::<url::Url>().unwrap(),
+                        ),
+                        connection_timeout: Duration::from_secs(1),
+                    })),
                     limits: create_test_limits(1, 1000), /* 1 request per
                                                          second - strict */
                 },
@@ -353,7 +385,12 @@ async fn test_router_independence_different_rate_limits() {
             lenient_router_id.clone(),
             RouterConfig {
                 rate_limit: RouterRateLimitConfig::Custom {
-                    store: Some(RateLimitStore::InMemory),
+                    store: Some(RateLimitStore::Redis(RedisConfig {
+                        host_url: Secret::from(
+                            REDIS_URL.parse::<url::Url>().unwrap(),
+                        ),
+                        connection_timeout: Duration::from_secs(1),
+                    })),
                     limits: create_test_limits(5, 1000), /* 5 requests per
                                                          second - lenient */
                 },
@@ -509,7 +546,10 @@ async fn test_multi_router_different_rate_limits_in_memory() {
         limits: None,
         cleanup_interval: Duration::from_secs(60),
     });
-    config.rate_limit_store = RateLimitStore::InMemory;
+    config.rate_limit_store = RateLimitStore::Redis(RedisConfig {
+        host_url: Secret::from(REDIS_URL.parse::<url::Url>().unwrap()),
+        connection_timeout: Duration::from_secs(1),
+    });
     let router_a_id = RouterId::Named(CompactString::from("router-a"));
     let router_b_id = RouterId::Named(CompactString::from("router-b"));
     let router_c_id = RouterId::Default;
@@ -520,7 +560,12 @@ async fn test_multi_router_different_rate_limits_in_memory() {
             router_a_id.clone(),
             RouterConfig {
                 rate_limit: RouterRateLimitConfig::Custom {
-                    store: Some(RateLimitStore::InMemory),
+                    store: Some(RateLimitStore::Redis(RedisConfig {
+                        host_url: Secret::from(
+                            REDIS_URL.parse::<url::Url>().unwrap(),
+                        ),
+                        connection_timeout: Duration::from_secs(1),
+                    })),
                     limits: create_test_limits(1, 1000),
                 },
                 load_balance:
@@ -532,7 +577,12 @@ async fn test_multi_router_different_rate_limits_in_memory() {
             router_b_id.clone(),
             RouterConfig {
                 rate_limit: RouterRateLimitConfig::Custom {
-                    store: Some(RateLimitStore::InMemory),
+                    store: Some(RateLimitStore::Redis(RedisConfig {
+                        host_url: Secret::from(
+                            REDIS_URL.parse::<url::Url>().unwrap(),
+                        ),
+                        connection_timeout: Duration::from_secs(1),
+                    })),
                     limits: create_test_limits(3, 1000),
                 },
                 load_balance:

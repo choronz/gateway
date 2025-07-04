@@ -91,9 +91,9 @@ impl Router {
             let service_stack = ServiceBuilder::new()
                 .layer(cache_layer.clone())
                 .layer(ErrorHandlerLayer::new(app_state.clone()))
+                .layer(rl_layer.clone())
                 .map_err(|e| ApiError::from(InternalError::BufferError(e)))
                 .layer(buffer::BufferLayer::new(BUFFER_SIZE))
-                .layer(rl_layer.clone())
                 .layer(request_context_layer.clone())
                 .service(balancer);
 

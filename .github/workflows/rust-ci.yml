@@ -6,8 +6,8 @@ on:
   pull_request:
     branches: ["main"]
     paths:
-      - 'crates/**'
-      - 'ai-gateway/**'
+      - "crates/**"
+      - "ai-gateway/**"
 
 env:
   CARGO_TERM_COLOR: always
@@ -27,6 +27,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Update rust version
+        run: rustup update
       - name: print version
         run: cargo --version
       - name: Clippy
@@ -42,5 +44,7 @@ jobs:
           - 6340:6379
     steps:
       - uses: actions/checkout@v4
+      - name: Update rust version
+        run: rustup update
       - name: Test
         run: cargo +stable test --tests --all-features

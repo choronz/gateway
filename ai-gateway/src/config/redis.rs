@@ -8,7 +8,7 @@ use crate::types::secret::Secret;
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct RedisConfig {
     #[serde(default = "default_url")]
-    pub url: Secret<String>,
+    pub host_url: Secret<url::Url>,
     #[serde(with = "humantime_serde", default = "default_connection_timeout")]
     pub connection_timeout: Duration,
 }
@@ -16,14 +16,14 @@ pub struct RedisConfig {
 impl Default for RedisConfig {
     fn default() -> Self {
         Self {
-            url: default_url(),
+            host_url: default_url(),
             connection_timeout: default_connection_timeout(),
         }
     }
 }
 
-fn default_url() -> Secret<String> {
-    Secret::from("redis://localhost:6340".to_string())
+fn default_url() -> Secret<url::Url> {
+    Secret::from("redis://localhost:6379".parse::<url::Url>().unwrap())
 }
 
 fn default_connection_timeout() -> Duration {
