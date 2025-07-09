@@ -34,12 +34,15 @@ impl EndpointConverterRegistry {
     ) -> Option<&(dyn EndpointConverter + Send + Sync + 'static)> {
         self.0
             .converters
-            .get(&RegistryKey::new(*source_endpoint, *target_endpoint))
+            .get(&RegistryKey::new(
+                source_endpoint.clone(),
+                target_endpoint.clone(),
+            ))
             .map(|v| &**v)
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct RegistryKey {
     source_endpoint: ApiEndpoint,
     target_endpoint: ApiEndpoint,
@@ -141,23 +144,6 @@ impl EndpointConverterRegistryInner {
                 BedrockConverter,
             >::new(BedrockConverter::new(model_mapper.clone()));
 
-        registry.register_converter(key, converter);
-
-        let key = RegistryKey::new(
-            ApiEndpoint::OpenAI(OpenAI::chat_completions()),
-            ApiEndpoint::OpenAICompatible {
-                provider: InferenceProvider::Mistral,
-                openai_endpoint: OpenAI::chat_completions(),
-            },
-        );
-        let converter = TypedEndpointConverter::<
-            endpoints::openai::ChatCompletions,
-            endpoints::openai::OpenAICompatibleChatCompletions,
-            OpenAICompatibleConverter,
-        >::new(OpenAICompatibleConverter::new(
-            InferenceProvider::Mistral,
-            model_mapper.clone(),
-        ));
         registry.register_converter(key, converter);
 
         registry
