@@ -1,21 +1,23 @@
 [package]
-name = "weighted-balance"
+name = "dynamic-router"
 edition = { workspace = true }
 authors = { workspace = true }
 license = { workspace = true }
 version = { workspace = true }
-description = "Weighted load balancing algorithms for the LLM proxy router"
+description = "Dynamic router for the Cloud LLM proxy router"
 homepage = "https://docs.helicone.ai/ai-gateway/overview"
 publish = false
 
 [dependencies]
 futures = { workspace = true }
+pin-project = { workspace = true }
 pin-project-lite = { workspace = true }
 rand = { workspace = true }
-tower = { workspace = true }
+tower = { workspace = true, features = ["discover", "ready-cache"] }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+http = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

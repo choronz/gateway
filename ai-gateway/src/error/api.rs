@@ -32,6 +32,19 @@ pub enum ApiError {
     Panic(String),
 }
 
+impl From<dynamic_router::router::Error> for ApiError {
+    fn from(error: dynamic_router::router::Error) -> Self {
+        match error {
+            dynamic_router::router::Error::ExtensionNotFound => {
+                Self::Internal(InternalError::ExtensionNotFound("RouterId"))
+            }
+            dynamic_router::router::Error::Discover(error) => Self::Internal(
+                InternalError::DynamicRouterDiscoveryError(error),
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct ErrorResponse {
     pub error: ErrorDetails,

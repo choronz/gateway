@@ -67,6 +67,8 @@ pub enum InternalError {
     MetricsNotConfigured(ApiEndpoint),
     /// Failed to sign AWS request: {0}
     AwsRequestSigningError(String),
+    /// Dynamic router discovery error: {0}
+    DynamicRouterDiscoveryError(BoxError),
     /// Cache error: {0}
     CacheError(http_cache::BoxError),
     /// Redis error: {0}
@@ -148,6 +150,8 @@ pub enum InternalErrorMetric {
     AwsRequestSigningError,
     /// Cache error
     CacheError,
+    /// Dynamic router discovery error
+    DynamicRouterDiscoveryError,
     /// Redis error
     RedisError,
     /// Pool error
@@ -193,6 +197,9 @@ impl From<&InternalError> for InternalErrorMetric {
             InternalError::RedisError(_) => Self::RedisError,
             InternalError::PoolError(_) => Self::PoolError,
             InternalError::PromptError(_) => Self::PromptError,
+            InternalError::DynamicRouterDiscoveryError(_) => {
+                Self::DynamicRouterDiscoveryError
+            }
         }
     }
 }

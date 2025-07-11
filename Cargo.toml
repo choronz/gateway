@@ -4,6 +4,7 @@ members = [
     "crates/mock-server",
     "crates/telemetry",
     "crates/weighted-balance",
+    "crates/dynamic-router",
     "ai-gateway",
     "scripts/test",
     "scripts/trace-test-client",
@@ -41,6 +42,7 @@ struct_field_names = { level = "allow" }
 telemetry = { path = "./crates/telemetry" }
 ai-gateway = { path = "./ai-gateway" }
 weighted-balance = { path = "./crates/weighted-balance" }
+dynamic-router = { path = "./crates/dynamic-router" }
 
 anthropic-ai-sdk = { version = "0.2.25" }
 anyhow = "1.0.98"
@@ -101,8 +103,8 @@ opentelemetry-http = "0.29.0"
 opentelemetry-otlp = { version = "0.29.0" }
 opentelemetry-semantic-conventions = "0.29.0"
 opentelemetry-stdout = { version = "0.29.0" }
-# TODO: Update to pull from crates.io when new crate is published
 opentelemetry-system-metrics = { version = "0.4.2" }
+pin-project = "1.1.10"
 pin-project-lite = "0.2.16"
 pretty_assertions = "1.4.1"
 r2d2 = "0.8.10"
