@@ -11,9 +11,10 @@ use tracing::{debug, error, info};
 use crate::{
     app_state::AppState,
     config::router::RouterConfig,
+    control_plane::types::Key,
     error::{init::InitError, runtime::RuntimeError},
     router::service::Router,
-    types::router::RouterId,
+    types::{org::OrgId, router::RouterId},
 };
 
 /// A database listener service that handles LISTEN/NOTIFY functionality.
@@ -48,11 +49,11 @@ enum ConnectedCloudGatewaysNotification {
         op: Op,
         config: Box<RouterConfig>,
     },
-    RouterKeysUpdated {
-        router_id: String,
-        router_hash: RouterId,
+    ApiKeyUpdated {
+        owner_id: String,
         organization_id: String,
         api_key_hash: String,
+        soft_delete: bool,
         op: Op,
     },
     Unknown {
@@ -125,6 +126,30 @@ impl DatabaseListener {
         Ok(())
     }
 
+    async fn handle_router_config_insert(
+        router_hash: RouterId,
+        router_config: RouterConfig,
+        app_state: AppState,
+        organization_id: OrgId,
+        tx: Sender<Change<RouterId, Router>>,
+    ) -> Result<(), RuntimeError> {
+        let router = Router::new(
+            router_hash.clone(),
+            Arc::new(router_config),
+            app_state.clone(),
+        )
+        .await?;
+
+        debug!("sending router to tx");
+        let _ = tx.send(Change::Insert(router_hash.clone(), router)).await;
+        debug!("router inserted");
+        app_state
+            .set_router_organization(router_hash.clone(), organization_id)
+            .await;
+
+        Ok(())
+    }
+
     /// Handles incoming database notifications.
     async fn handle_notification(
         notification: &sqlx::postgres::PgNotification,
@@ -147,64 +172,91 @@ impl DatabaseListener {
                     router_id: _,
                     router_hash,
                     router_config_id: _,
-                    organization_id: _,
+                    organization_id,
                     version: _,
                     op,
                     config,
                 } => {
-                    info!("Router configuration updated");
+                    debug!("Router configuration updated");
                     match op {
                         Op::Insert => {
-                            let router = Router::new(
-                                router_hash.clone(),
-                                Arc::new(*config),
-                                app_state.clone(),
+                            let organization_id = OrgId::try_from(organization_id.as_str()).map_err(|e| {
+                                error!(error = %e, "failed to convert organization id to OrgId");
+                                RuntimeError::Internal(crate::error::internal::InternalError::Internal)
+                            })?;
+                            Self::handle_router_config_insert(
+                                router_hash,
+                                *config,
+                                app_state,
+                                organization_id,
+                                tx,
                             )
-                            .await?;
-
-                            info!("sending router to tx");
-                            let _ = tx
-                                .send(Change::Insert(router_hash, router))
-                                .await;
-                            info!("router inserted");
-                            Ok(())
+                            .await
                         }
                         Op::Delete => {
                             let _ = tx.send(Change::Remove(router_hash)).await;
-                            info!("router removed");
+                            debug!("router removed");
                             Ok(())
                         }
                         _ => {
-                            info!("skipping router insert");
+                            debug!("skipping router insert");
                             Ok(())
                         }
                     }
                 }
-                ConnectedCloudGatewaysNotification::RouterKeysUpdated {
-                    router_id: _,
-                    router_hash,
+                ConnectedCloudGatewaysNotification::ApiKeyUpdated {
+                    owner_id,
                     organization_id,
                     api_key_hash,
+                    soft_delete,
                     op,
-                } => {
-                    info!("Router keys updated");
-                    info!("router_hash: {}", router_hash);
-                    info!("organization_id: {}", organization_id);
-                    info!("api_key_hash: {}", api_key_hash);
-                    info!("op: {:?}", op);
-                    // TODO: Handle router configuration deletion
-
-                    Ok(())
-                }
+                } => match op {
+                    Op::Insert => {
+                        let organization_id = OrgId::try_from(organization_id.as_str()).map_err(|e| {
+                                error!(error = %e, "failed to convert organization id to OrgId");
+                                RuntimeError::Internal(crate::error::internal::InternalError::Internal)
+                            })?;
+                        let _ = app_state
+                            .set_router_api_key(Key {
+                                key_hash: api_key_hash,
+                                owner_id,
+                                organization_id,
+                            })
+                            .await;
+                        debug!("router key inserted");
+                        Ok(())
+                    }
+                    Op::Delete => {
+                        // This case should never happen, since we update the
+                        // soft delete flag when we delete an api key.
+                        let _ =
+                            app_state.remove_router_api_key(api_key_hash).await;
+                        debug!("router key removed");
+                        Ok(())
+                    }
+                    Op::Update => {
+                        if soft_delete {
+                            let _ = app_state
+                                .remove_router_api_key(api_key_hash)
+                                .await;
+                            debug!("router key removed");
+                        }
+                        Ok(())
+                    }
+                    Op::Truncate => {
+                        debug!("skipping router key truncate");
+                        Ok(())
+                    }
+                },
                 ConnectedCloudGatewaysNotification::Unknown { data } => {
-                    info!("Unknown notification event");
-                    info!("data: {:?}", data);
+                    debug!("Unknown notification event");
+                    debug!("data: {:?}", data);
                     // TODO: Handle unknown event
                     Ok(())
                 }
             }
         } else {
-            info!("received unknown notification");
+            debug!("received unknown notification");
             Ok(())
         }
 

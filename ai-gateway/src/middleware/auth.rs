@@ -5,9 +5,14 @@ use tower_http::auth::AsyncAuthorizeRequest;
 
 use crate::{
     app_state::AppState,
+    config::DeploymentTarget,
     control_plane::types::hash_key,
     error::auth::AuthError,
-    types::{extensions::AuthContext, secret::Secret},
+    types::{
+        extensions::{AuthContext, RequestKind},
+        router::RouterId,
+        secret::Secret,
+    },
 };
 
 #[derive(Clone)]
@@ -24,19 +29,70 @@ impl AuthService {
     async fn authenticate_request_inner(
         app_state: AppState,
         api_key: &str,
+        request_kind: Option<&RequestKind>,
+        router_id: Option<&RouterId>,
     ) -> Result<AuthContext, AuthError> {
-        let config = &app_state.0.control_plane_state.read().await.config;
         let api_key_without_bearer = api_key.replace("Bearer ", "");
         let computed_hash = hash_key(&api_key_without_bearer);
-        let key = config.get_key_from_hash(&computed_hash);
-        if let Some(key) = key {
-            Ok(AuthContext {
-                api_key: Secret::from(api_key_without_bearer),
-                user_id: key.owner_id.as_str().try_into()?,
-                org_id: config.auth.organization_id.as_str().try_into()?,
-            })
-        } else {
-            Err(AuthError::InvalidCredentials)
+
+        match app_state.0.config.deployment_target {
+            DeploymentTarget::Cloud => {
+                if let Some(key) =
+                    app_state.check_helicone_api_key(&computed_hash).await
+                    && let Some(request_kind) = request_kind
+                {
+                    match request_kind {
+                        RequestKind::Router => {
+                            if let Some(router_id) = router_id
+                                && let Some(router_organization_id) = app_state
+                                    .get_router_organization(router_id)
+                                    .await
+                                && key.organization_id == router_organization_id
+                            {
+                                Ok(AuthContext {
+                                    api_key: Secret::from(
+                                        api_key_without_bearer,
+                                    ),
+                                    user_id: key
+                                        .owner_id
+                                        .as_str()
+                                        .try_into()?,
+                                    org_id: key.organization_id,
+                                })
+                            } else {
+                                Err(AuthError::InvalidCredentials)
+                            }
+                        }
+                        RequestKind::UnifiedApi | RequestKind::DirectProxy => {
+                            Ok(AuthContext {
+                                api_key: Secret::from(api_key_without_bearer),
+                                user_id: key.owner_id.as_str().try_into()?,
+                                org_id: key.organization_id,
+                            })
+                        }
+                    }
+                } else {
+                    Err(AuthError::InvalidCredentials)
+                }
+            }
+            DeploymentTarget::Sidecar => {
+                let config =
+                    &app_state.0.control_plane_state.read().await.config;
+                let key = config.get_key_from_hash(&computed_hash);
+                if let Some(key) = key {
+                    Ok(AuthContext {
+                        api_key: Secret::from(api_key_without_bearer),
+                        user_id: key.owner_id.as_str().try_into()?,
+                        org_id: config
+                            .auth
+                            .organization_id
+                            .as_str()
+                            .try_into()?,
+                    })
+                } else {
+                    Err(AuthError::InvalidCredentials)
+                }
+            }
         }
     }
 }
@@ -71,8 +127,17 @@ where
                 );
             };
             app_state.0.metrics.auth_attempts.add(1, &[]);
-            match Self::authenticate_request_inner(app_state.clone(), api_key)
-                .await
+
+            let request_kind = request.extensions().get::<RequestKind>();
+            let router_id = request.extensions().get::<RouterId>();
+
+            match Self::authenticate_request_inner(
+                app_state.clone(),
+                api_key,
+                request_kind,
+                router_id,
+            )
+            .await
             {
                 Ok(auth_ctx) => {
                     request.extensions_mut().insert(auth_ctx);

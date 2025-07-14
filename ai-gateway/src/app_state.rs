@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use rustc_hash::FxHashMap as HashMap;
 use sqlx::PgPool;
@@ -14,7 +14,7 @@ use crate::{
         Config, rate_limit::RateLimiterConfig,
         response_headers::ResponseHeadersConfig, router::RouterConfig,
     },
-    control_plane::control_plane_state::ControlPlaneState,
+    control_plane::{control_plane_state::ControlPlaneState, types::Key},
     discover::monitor::{
         health::provider::HealthMonitorMap, metrics::EndpointMetricsRegistry,
         rate_limit::RateLimitMonitorMap,
@@ -26,6 +26,7 @@ use crate::{
     router::service::Router,
     store::router_store::RouterStore,
     types::{
+        org::OrgId,
         provider::{InferenceProvider, ProviderKey, ProviderKeys},
         rate_limit::{
             RateLimitEvent, RateLimitEventReceivers, RateLimitEventSenders,
@@ -56,9 +57,6 @@ pub struct InnerAppState {
     pub router_store: Option<RouterStore>,
     pub pg_pool: Option<PgPool>,
     pub jawn_http_client: JawnClient,
-    pub control_plane_state: Arc<RwLock<ControlPlaneState>>,
-    pub direct_proxy_api_keys: ProviderKeys,
-    pub provider_keys: RwLock<HashMap<RouterId, ProviderKeys>>,
     pub cache_manager: Option<CacheClient>,
     pub global_rate_limit: Option<Arc<RateLimiterConfig>>,
     pub router_rate_limits: RwLock<HashMap<RouterId, Arc<RateLimiterConfig>>>,
@@ -72,8 +70,14 @@ pub struct InnerAppState {
     pub rate_limit_monitors: RateLimitMonitorMap,
     pub rate_limit_senders: RateLimitEventSenders,
     pub rate_limit_receivers: RateLimitEventReceivers,
-
     pub router_tx: RwLock<Option<Sender<Change<RouterId, Router>>>>,
+
+    pub control_plane_state: Arc<RwLock<ControlPlaneState>>,
+
+    pub direct_proxy_api_keys: ProviderKeys,
+    pub provider_keys: RwLock<HashMap<RouterId, ProviderKeys>>,
+    pub helicone_api_keys: RwLock<Option<HashSet<Key>>>,
+    pub router_organization_map: RwLock<HashMap<RouterId, OrgId>>,
 }
 
 impl AppState {
@@ -150,5 +154,80 @@ impl AppState {
     pub async fn set_router_tx(&self, tx: Sender<Change<RouterId, Router>>) {
         let mut router_tx = self.0.router_tx.write().await;
         *router_tx = Some(tx);
+    }
+
+    pub async fn get_router_api_keys(&self) -> Option<HashSet<Key>> {
+        let router_api_keys = self.0.helicone_api_keys.read().await;
+        router_api_keys.clone()
+    }
+
+    pub async fn check_helicone_api_key(
+        &self,
+        api_key_hash: &str,
+    ) -> Option<Key> {
+        let router_api_keys = self.0.helicone_api_keys.read().await;
+        router_api_keys
+            .as_ref()?
+            .iter()
+            .find(|k| k.key_hash == api_key_hash)
+            .cloned()
+    }
+
+    pub async fn set_router_api_keys(&self, keys: Option<HashSet<Key>>) {
+        let mut router_api_keys = self.0.helicone_api_keys.write().await;
+        (*router_api_keys).clone_from(&keys);
+    }
+
+    pub async fn set_router_api_key(
+        &self,
+        api_key: Key,
+    ) -> Result<Option<HashSet<Key>>, InitError> {
+        tracing::debug!("setting router api key");
+        let mut router_api_keys = self.0.helicone_api_keys.write().await;
+        router_api_keys
+            .as_mut()
+            .ok_or_else(|| InitError::RouterApiKeysNotInitialized)?
+            .insert(api_key.clone());
+        Ok(router_api_keys.clone())
+    }
+
+    pub async fn remove_router_api_key(
+        &self,
+        api_key_hash: String,
+    ) -> Result<Option<HashSet<Key>>, InitError> {
+        let mut router_api_keys = self.0.helicone_api_keys.write().await;
+        router_api_keys
+            .as_mut()
+            .ok_or_else(|| InitError::RouterApiKeysNotInitialized)?
+            .retain(|k| k.key_hash != api_key_hash);
+        Ok(router_api_keys.clone())
+    }
+
+    pub async fn set_router_organization_map(
+        &self,
+        map: HashMap<RouterId, OrgId>,
+    ) {
+        let mut router_organization_map =
+            self.0.router_organization_map.write().await;
+        router_organization_map.clone_from(&map);
+    }
+
+    pub async fn set_router_organization(
+        &self,
+        router_id: RouterId,
+        organization_id: OrgId,
+    ) {
+        let mut router_organization_map =
+            self.0.router_organization_map.write().await;
+        router_organization_map.insert(router_id, organization_id);
+    }
+
+    pub async fn get_router_organization(
+        &self,
+        router_id: &RouterId,
+    ) -> Option<OrgId> {
+        let router_organization_map =
+            self.0.router_organization_map.read().await;
+        router_organization_map.get(router_id).copied()
     }
 }

@@ -8,6 +8,7 @@ use ai_gateway::{
     },
     control_plane::types::{Key, hash_key},
     tests::{TestDefault, harness::Harness, mock::MockArgs},
+    types::org::OrgId,
 };
 use http::{Method, Request, StatusCode};
 use http_body_util::BodyExt;
@@ -153,6 +154,8 @@ async fn rate_limit_per_user_isolation_impl(
     let user2_auth = "sk-helicone-user2-key";
     let user1_id = Uuid::new_v4();
     let user2_id = Uuid::new_v4();
+    let org1_id = Uuid::new_v4();
+    let org2_id = Uuid::new_v4();
 
     let mut harness = Harness::builder()
         .with_config(config)
@@ -161,10 +164,12 @@ async fn rate_limit_per_user_isolation_impl(
             Key {
                 key_hash: hash_key(user1_auth),
                 owner_id: user1_id.to_string(),
+                organization_id: OrgId::new(org1_id),
             },
             Key {
                 key_hash: hash_key(user2_auth),
                 owner_id: user2_id.to_string(),
+                organization_id: OrgId::new(org2_id),
             },
         ])
         .build()

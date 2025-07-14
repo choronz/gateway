@@ -8,13 +8,18 @@ use std::{
 use compact_str::CompactString;
 use futures::Stream;
 use pin_project_lite::pin_project;
+use rustc_hash::FxHashMap;
 use tokio::sync::mpsc::Receiver;
 use tokio_stream::wrappers::ReceiverStream;
 use tower::discover::Change;
 
 use crate::{
-    app_state::AppState, config::router::RouterConfig, discover::ServiceMap,
-    error::init::InitError, router::service::Router, types::router::RouterId,
+    app_state::AppState,
+    config::router::RouterConfig,
+    discover::ServiceMap,
+    error::init::InitError,
+    router::service::Router,
+    types::{org::OrgId, router::RouterId},
 };
 
 pin_project! {
@@ -40,12 +45,13 @@ impl CloudDiscovery {
             .as_ref()
             .ok_or(InitError::StoreNotConfigured("router_store"))?;
         let routers = router_store.get_all_routers().await?;
-        for router in routers {
+        let mut router_organisation_map = FxHashMap::default();
+        for db_router in routers {
             let router_id = RouterId::Named(CompactString::from(
-                router.router_hash.to_string(),
+                db_router.router_hash.to_string(),
             ));
             let router_config = serde_json::from_value::<RouterConfig>(
-                router.config.clone(),
+                db_router.config.clone(),
             )
             .map_err(|e| {
                 tracing::error!(error = %e, "failed to parse router config");
@@ -59,7 +65,14 @@ impl CloudDiscovery {
             )
             .await?;
             service_map.insert(router_id.clone(), router);
+            router_organisation_map.insert(
+                router_id.clone(),
+                OrgId::new(db_router.organization_id),
+            );
         }
+        app_state
+            .set_router_organization_map(router_organisation_map)
+            .await;
 
         tracing::debug!("Created config router discovery");
         Ok(Self {
