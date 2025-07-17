@@ -3,9 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use derive_more::{AsRef, From, Into};
 use serde::{Deserialize, Serialize};
 
-use super::{
-    model_id::ModelId, org::OrgId, provider::ProviderKeys, user::UserId,
-};
+use super::{model_id::ModelId, org::OrgId, user::UserId};
 use crate::{config::router::RouterConfig, types::secret::Secret};
 
 #[derive(Debug, Clone, AsRef, From, Into)]
@@ -23,7 +21,6 @@ pub struct RequestContext {
     /// If `None`, the request was for a direct proxy.
     /// If `Some`, the request was for a load balanced router.
     pub router_config: Option<Arc<RouterConfig>>,
-    pub provider_api_keys: ProviderKeys,
     /// If `None`, the router is configured to not require auth for requests,
     /// disabling some features.
     pub auth_context: Option<AuthContext>,

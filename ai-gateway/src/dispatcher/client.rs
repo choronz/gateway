@@ -7,6 +7,7 @@ use tracing::{Instrument, info_span};
 
 use crate::{
     app_state::AppState,
+    config::DeploymentTarget,
     discover::monitor::metrics::EndpointMetricsRegistry,
     dispatcher::{
         SSEStream, anthropic_client::Client as AnthropicClient,
@@ -16,33 +17,48 @@ use crate::{
     },
     endpoints::ApiEndpoint,
     error::{
-        api::ApiError, init::InitError, internal::InternalError,
-        stream::StreamError,
+        api::ApiError, auth::AuthError, init::InitError,
+        internal::InternalError, stream::StreamError,
     },
     types::{
+        extensions::AuthContext,
         provider::{InferenceProvider, ProviderKey},
-        router::RouterId,
     },
 };
 
 pub trait ProviderClient {
-    fn extract_and_sign_aws_headers(
+    async fn authenticate(
         &self,
+        app_state: &AppState,
         request_builder: reqwest::RequestBuilder,
         req_body_bytes: &bytes::Bytes,
+        auth_ctx: Option<&AuthContext>,
+        provider: InferenceProvider,
     ) -> Result<reqwest::RequestBuilder, ApiError>;
 }
 
 impl ProviderClient for Client {
-    fn extract_and_sign_aws_headers(
+    async fn authenticate(
         &self,
+        app_state: &AppState,
         request_builder: reqwest::RequestBuilder,
         req_body_bytes: &bytes::Bytes,
+        auth_ctx: Option<&AuthContext>,
+        provider: InferenceProvider,
     ) -> Result<reqwest::RequestBuilder, ApiError> {
         match self {
             Client::Bedrock(inner) => inner
                 .extract_and_sign_aws_headers(request_builder, req_body_bytes),
-            _ => Ok(request_builder),
+            Client::OpenAICompatible(_) | Client::Anthropic(_) => {
+                self.authenticate_inner(
+                    app_state,
+                    request_builder,
+                    auth_ctx,
+                    provider,
+                )
+                .await
+            }
+            Client::Ollama(_) => Ok(request_builder),
         }
     }
 }
@@ -56,6 +72,99 @@ pub enum Client {
 }
 
 impl Client {
+    async fn authenticate_inner(
+        &self,
+        app_state: &AppState,
+        request_builder: reqwest::RequestBuilder,
+        auth_ctx: Option<&AuthContext>,
+        provider: InferenceProvider,
+    ) -> Result<reqwest::RequestBuilder, ApiError> {
+        match app_state.0.config.deployment_target {
+            DeploymentTarget::Cloud => {
+                if let Some(auth_ctx) = auth_ctx {
+                    let org_id = auth_ctx.org_id;
+
+                    let provider_key = app_state
+                        .0
+                        .provider_keys
+                        .get_provider_key(&provider, Some(&org_id))
+                        .await;
+
+                    if let Some(ProviderKey::Secret(key)) = provider_key
+                        && key.expose() != ""
+                    {
+                        let request_builder = match self {
+                            Client::OpenAICompatible(_) => {
+                                OpenAICompatibleClient::set_auth_header(
+                                    request_builder,
+                                    &key,
+                                )
+                            }
+                            Client::Anthropic(_) => {
+                                AnthropicClient::set_auth_header(
+                                    request_builder,
+                                    &key,
+                                )
+                            }
+                            _ => request_builder,
+                        };
+
+                        return Ok(request_builder);
+                    }
+
+                    let refetched_org_provider_keys = app_state
+                        .0
+                        .router_store
+                        .as_ref()
+                        .ok_or(ApiError::Internal(InternalError::Internal))?
+                        .get_org_provider_keys(org_id)
+                        .await
+                        .map_err(|_| {
+                            ApiError::Internal(InternalError::Internal)
+                        })?;
+
+                    let provider_key =
+                        refetched_org_provider_keys.get(&provider);
+
+                    app_state
+                        .0
+                        .provider_keys
+                        .set_org_provider_keys(
+                            org_id,
+                            refetched_org_provider_keys.clone(),
+                        )
+                        .await;
+
+                    if let Some(ProviderKey::Secret(key)) = provider_key {
+                        let request_builder = match self {
+                            Client::OpenAICompatible(_) => {
+                                OpenAICompatibleClient::set_auth_header(
+                                    request_builder,
+                                    key,
+                                )
+                            }
+                            Client::Anthropic(_) => {
+                                AnthropicClient::set_auth_header(
+                                    request_builder,
+                                    key,
+                                )
+                            }
+                            _ => request_builder,
+                        };
+
+                        return Ok(request_builder);
+                    }
+
+                    return Err(ApiError::Authentication(
+                        AuthError::ProviderKeyNotFound,
+                    ));
+                }
+                Err(ApiError::Authentication(AuthError::ProviderKeyNotFound))
+            }
+            DeploymentTarget::Sidecar => Ok(request_builder),
+        }
+    }
+
     pub(crate) async fn sse_stream<B>(
         request_builder: RequestBuilder,
         body: B,
@@ -73,6 +182,22 @@ impl Client {
             sse_stream(event_source, api_endpoint, metrics_registry.clone())
                 .await?;
         Ok(stream)
+    }
+
+    pub(crate) async fn new(
+        app_state: &AppState,
+        inference_provider: InferenceProvider,
+    ) -> Result<Self, InitError> {
+        if inference_provider == InferenceProvider::Ollama {
+            return Self::new_inner(app_state, inference_provider, None);
+        }
+        let api_key = &app_state
+            .0
+            .provider_keys
+            .get_provider_key(&inference_provider, None)
+            .await;
+
+        Self::new_inner(app_state, inference_provider, api_key.as_ref())
     }
 
     fn new_inner(
@@ -108,49 +233,6 @@ impl Client {
                 Ok(Self::Ollama(OllamaClient::new(app_state, base_client)?))
             }
         }
-    }
-
-    pub(crate) async fn new_for_router(
-        app_state: &AppState,
-        inference_provider: InferenceProvider,
-        router_id: &RouterId,
-    ) -> Result<Self, InitError> {
-        if inference_provider == InferenceProvider::Ollama {
-            return Self::new_inner(app_state, inference_provider, None);
-        }
-        let api_key = &app_state
-            .get_provider_api_key_for_router(router_id, &inference_provider)
-            .await?;
-
-        Self::new_inner(app_state, inference_provider, api_key.as_ref())
-    }
-
-    pub(crate) fn new_for_direct_proxy(
-        app_state: &AppState,
-        inference_provider: InferenceProvider,
-    ) -> Result<Self, InitError> {
-        if inference_provider == InferenceProvider::Ollama {
-            return Self::new_inner(app_state, inference_provider, None);
-        }
-        let api_key = &app_state
-            .get_provider_api_key_for_direct_proxy(&inference_provider)?;
-
-        Self::new_inner(app_state, inference_provider, api_key.as_ref())
-    }
-
-    pub(crate) fn new_for_unified_api(
-        app_state: &AppState,
-        inference_provider: InferenceProvider,
-    ) -> Result<Self, InitError> {
-        if inference_provider == InferenceProvider::Ollama {
-            return Self::new_inner(app_state, inference_provider, None);
-        }
-        // we're cheating here but this will be changed soon for cloud hosted
-        // version
-        let api_key = &app_state
-            .get_provider_api_key_for_direct_proxy(&inference_provider)?;
-
-        Self::new_inner(app_state, inference_provider, api_key.as_ref())
     }
 }
 

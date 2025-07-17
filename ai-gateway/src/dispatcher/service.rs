@@ -75,9 +75,7 @@ impl Dispatcher {
         provider: InferenceProvider,
         model_mapper: ModelMapper,
     ) -> Result<DispatcherService, InitError> {
-        let client =
-            Client::new_for_router(&app_state, provider.clone(), router_id)
-                .await?;
+        let client = Client::new(&app_state, provider.clone()).await?;
         let rate_limit_tx = app_state.get_rate_limit_tx(router_id).await?;
 
         let dispatcher = Self {
@@ -130,12 +128,11 @@ impl Dispatcher {
         Self::new_inner(app_state, router_id, provider, model_mapper).await
     }
 
-    pub fn new_direct_proxy(
+    pub async fn new_direct_proxy(
         app_state: AppState,
         provider: &InferenceProvider,
     ) -> Result<DispatcherService, InitError> {
-        let client =
-            Client::new_for_direct_proxy(&app_state, provider.clone())?;
+        let client = Client::new(&app_state, provider.clone()).await?;
 
         let dispatcher = Self {
             client,
@@ -160,11 +157,11 @@ impl Dispatcher {
             .service(dispatcher))
     }
 
-    pub fn new_without_mapper(
+    pub async fn new_without_mapper(
         app_state: AppState,
         provider: &InferenceProvider,
     ) -> Result<DispatcherServiceWithoutMapper, InitError> {
-        let client = Client::new_for_unified_api(&app_state, provider.clone())?;
+        let client = Client::new(&app_state, provider.clone()).await?;
 
         let dispatcher = Self {
             client,
@@ -306,7 +303,14 @@ impl Dispatcher {
 
         let request_builder = self
             .client
-            .extract_and_sign_aws_headers(request_builder, &req_body_bytes)?;
+            .authenticate(
+                &self.app_state,
+                request_builder,
+                &req_body_bytes,
+                auth_ctx,
+                self.provider.clone(),
+            )
+            .await?;
 
         let metrics_for_stream = self.app_state.0.endpoint_metrics.clone();
         if let Some(ref api_endpoint) = api_endpoint {

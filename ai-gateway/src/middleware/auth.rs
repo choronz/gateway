@@ -146,7 +146,8 @@ where
                 Err(e) => {
                     match &e {
                         AuthError::MissingAuthorizationHeader
-                        | AuthError::InvalidCredentials => {
+                        | AuthError::InvalidCredentials
+                        | AuthError::ProviderKeyNotFound => {
                             app_state.0.metrics.auth_rejections.add(1, &[]);
                         }
                     }
