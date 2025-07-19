@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::{
     control_plane::types::Key,
-    error::{init::InitError, provider::ProviderError},
+    error::init::InitError,
     types::{
         org::OrgId,
         provider::{InferenceProvider, ProviderKey, ProviderKeyMap},
@@ -150,15 +150,15 @@ impl RouterStore {
             let provider_key =
                 ProviderKey::Secret(Secret::from(key.decrypted_provider_key));
             let inference_provider =
-                InferenceProvider::from_helicone_provider_name(
+                match InferenceProvider::from_helicone_provider_name(
                     &key.provider_name,
-                )
-                .map_err(|e| {
-                    error!(error = %e, "failed to get inference provider");
-                    InitError::ProviderError(
-                        ProviderError::InvalidProviderName(key.provider_name),
-                    )
-                })?;
+                ) {
+                    Ok(provider) => provider,
+                    Err(e) => {
+                        error!(error = %e, provider_name = %key.provider_name, "Failed to parse inference provider, skipping");
+                        continue;
+                    }
+                };
             let existing_provider_keys =
                 provider_keys.entry(OrgId::new(key.org_id)).or_default();
             existing_provider_keys.insert(inference_provider, provider_key);
@@ -197,15 +197,15 @@ impl RouterStore {
             let provider_key =
                 ProviderKey::Secret(Secret::from(key.decrypted_provider_key));
             let inference_provider =
-                InferenceProvider::from_helicone_provider_name(
+                match InferenceProvider::from_helicone_provider_name(
                     &key.provider_name,
-                )
-                .map_err(|e| {
-                    error!(error = %e, "failed to get inference provider");
-                    InitError::ProviderError(
-                        ProviderError::InvalidProviderName(key.provider_name),
-                    )
-                })?;
+                ) {
+                    Ok(provider) => provider,
+                    Err(e) => {
+                        error!(error = %e, provider_name = %key.provider_name, "Failed to parse inference provider, skipping");
+                        continue;
+                    }
+                };
             provider_keys.insert(inference_provider, provider_key);
         }
         Ok(ProviderKeyMap::from_db(provider_keys))
