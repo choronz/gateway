@@ -19,7 +19,7 @@ use crate::{
     },
     store::minio::MinioClient,
     types::{
-        extensions::{AuthContext, PromptContext, PromptInputValue},
+        extensions::{AuthContext, PromptContext},
         request::Request,
         response::{JawnResponse, Response},
     },
@@ -172,25 +172,10 @@ async fn build_prompt_request(
         .await
         .map_err(|e| ApiError::Internal(InternalError::PromptError(e)))?;
 
-    tracing::debug!(
-        "Prompt body from S3: {}",
-        serde_json::to_string_pretty(&prompt_body_json).unwrap_or_default()
-    );
-
     let merged_body =
         merge_prompt_with_request(prompt_body_json, &request_json)?;
 
-    tracing::debug!(
-        "Merged body: {}",
-        serde_json::to_string_pretty(&merged_body).unwrap_or_default()
-    );
-
     let processed_body = process_prompt_variables(merged_body, &prompt_ctx)?;
-
-    tracing::debug!(
-        "Processed body: {}",
-        serde_json::to_string_pretty(&processed_body).unwrap_or_default()
-    );
 
     let merged_bytes = serde_json::to_vec(&processed_body)
         .map_err(|_| ApiError::Internal(InternalError::Internal))?;
@@ -309,35 +294,158 @@ fn process_prompt_variables(
         return Ok(body);
     };
 
-    let Some(messages_value) = body_obj.get_mut("messages") else {
-        return Ok(body);
-    };
-
-    let Some(messages_array) = messages_value.as_array_mut() else {
-        return Ok(body);
-    };
-
     let variable_regex = Regex::new(r"\{\{\s*hc\s*:\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}")
         .map_err(|_| ApiError::Internal(InternalError::Internal))?;
 
-    // track validated variables to avoid re-validation
-    let mut validated_variables = HashSet::new();
+    if let Some(messages_value) = body_obj.get_mut("messages")
+        && let Some(messages_array) = messages_value.as_array_mut()
+    {
+        let mut validated_variables = HashSet::new();
 
-    for message_value in messages_array {
-        process_message_variables(
-            message_value,
+        for message_value in messages_array {
+            process_message_variables(
+                message_value,
+                inputs,
+                &variable_regex,
+                &mut validated_variables,
+            )?;
+        }
+    }
+
+    if let Some(response_format_value) = body_obj.get_mut("response_format") {
+        let processed_response_format = process_prompt_schema(
+            response_format_value.clone(),
             inputs,
             &variable_regex,
-            &mut validated_variables,
         )?;
+        body_obj
+            .insert("response_format".to_string(), processed_response_format);
+    }
+
+    if let Some(tools_value) = body_obj.get_mut("tools") {
+        let processed_tools = process_prompt_schema(
+            tools_value.clone(),
+            inputs,
+            &variable_regex,
+        )?;
+        body_obj.insert("tools".to_string(), processed_tools);
     }
 
     Ok(body)
 }
 
+fn process_prompt_schema(
+    value: serde_json::Value,
+    inputs: &std::collections::HashMap<String, serde_json::Value>,
+    variable_regex: &Regex,
+) -> Result<serde_json::Value, ApiError> {
+    // Any KV in a tool or response schema can have a variable, with two cases:
+    // "{{hc:name:type}}" or "{{hc:name:type}} world." If the former, then
+    // we wholly replace it with the input, (which may an object, such as an
+    // array). This allows objects as prompt inputs in schemas. The latter
+    // is a partial match, and we perform regex replacement as we do normally.
+
+    // Other than some specific cases for prompt input type validation, we allow
+    // the provider to complain on invalid schemas.
+    match value {
+        serde_json::Value::String(s) => {
+            if is_whole_variable_match(&s, variable_regex) {
+                let variable_name =
+                    get_variable_name_from_string(&s, variable_regex)?;
+                if let Some(input_value) = inputs.get(&variable_name) {
+                    return Ok(input_value.clone());
+                }
+            }
+            let processed_text = replace_variables(
+                &s,
+                inputs,
+                variable_regex,
+                &mut HashSet::new(),
+            )?;
+            Ok(serde_json::Value::String(processed_text))
+        }
+        serde_json::Value::Array(arr) => {
+            let mut processed_array = Vec::new();
+            for item in arr {
+                let processed_item =
+                    process_prompt_schema(item, inputs, variable_regex)?;
+                processed_array.push(processed_item);
+            }
+            Ok(serde_json::Value::Array(processed_array))
+        }
+        serde_json::Value::Object(obj) => {
+            let mut processed_object = serde_json::Map::new();
+            for (key, val) in obj {
+                let processed_key =
+                    if is_whole_variable_match(&key, variable_regex) {
+                        let variable_name = get_variable_name_from_string(
+                            &key,
+                            variable_regex,
+                        )?;
+                        if let Some(input_value) = inputs.get(&variable_name) {
+                            if let Some(string_value) = input_value.as_str() {
+                                string_value.to_string()
+                            } else {
+                                return Err(ApiError::InvalidRequest(
+                                    InvalidRequestError::InvalidPromptInputs(
+                                        format!(
+                                            "Variable '{variable_name}' in \
+                                             object schema key must be a \
+                                             string, got: {input_value}"
+                                        ),
+                                    ),
+                                ));
+                            }
+                        } else {
+                            key
+                        }
+                    } else {
+                        replace_variables(
+                            &key,
+                            inputs,
+                            variable_regex,
+                            &mut HashSet::new(),
+                        )?
+                    };
+
+                let processed_value =
+                    process_prompt_schema(val, inputs, variable_regex)?;
+                processed_object.insert(processed_key, processed_value);
+            }
+            Ok(serde_json::Value::Object(processed_object))
+        }
+        _ => Ok(value),
+    }
+}
+
+fn is_whole_variable_match(text: &str, variable_regex: &Regex) -> bool {
+    if let Some(captures) = variable_regex.captures(text)
+        && let Some(full_match) = captures.get(0)
+    {
+        return full_match.as_str() == text;
+    }
+    false
+}
+
+fn get_variable_name_from_string(
+    text: &str,
+    variable_regex: &Regex,
+) -> Result<String, ApiError> {
+    if let Some(captures) = variable_regex.captures(text)
+        && let Some(name_match) = captures.get(1)
+    {
+        return Ok(name_match.as_str().to_string());
+    }
+    Err(ApiError::InvalidRequest(
+        InvalidRequestError::InvalidPromptInputs(format!(
+            "Failed to extract variable name from: {text}"
+        )),
+    ))
+}
+
 fn process_message_variables(
     message_value: &mut serde_json::Value,
-    inputs: &std::collections::HashMap<String, PromptInputValue>,
+    inputs: &std::collections::HashMap<String, serde_json::Value>,
     variable_regex: &Regex,
     validated_variables: &mut HashSet<String>,
 ) -> Result<(), ApiError> {
@@ -381,7 +489,7 @@ fn process_message_variables(
 
 fn replace_variables(
     text: &str,
-    inputs: &std::collections::HashMap<String, PromptInputValue>,
+    inputs: &std::collections::HashMap<String, serde_json::Value>,
     variable_regex: &Regex,
     validated_variables: &mut std::collections::HashSet<String>,
 ) -> Result<String, ApiError> {
@@ -417,14 +525,14 @@ fn replace_variables(
 }
 
 fn validate_variable_type(
-    value: &PromptInputValue,
+    value: &serde_json::Value,
     expected_type: &str,
 ) -> Result<String, ApiError> {
     let value_string = value.to_string();
 
     match expected_type {
         "number" => {
-            if matches!(value, PromptInputValue::Number(_)) {
+            if matches!(value, serde_json::Value::Number(_)) {
                 return Ok(value_string);
             }
 
@@ -441,7 +549,7 @@ fn validate_variable_type(
                 })
         }
         "boolean" => {
-            if matches!(value, PromptInputValue::Boolean(_)) {
+            if matches!(value, serde_json::Value::Bool(_)) {
                 return Ok(value_string);
             }
 
