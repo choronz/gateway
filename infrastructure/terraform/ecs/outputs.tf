@@ -4,7 +4,7 @@ output "load_balancer_dns_name" {
 }
 
 output "load_balancer_zone_id" {
-  description = "Hosted zone ID of the load balancer"
+  description = "Zone ID of the load balancer"
   value       = aws_lb.fargate_lb.zone_id
 }
 
@@ -33,17 +33,62 @@ output "target_group_arn" {
   value       = aws_lb_target_group.fargate_tg.arn
 }
 
-output "security_group_id" {
-  description = "ID of the security group"
+output "load_balancer_security_group_id" {
+  description = "Security group ID for the load balancer"
   value       = aws_security_group.load_balancer_sg.id
 }
 
+output "ecs_tasks_security_group_id" {
+  description = "Security group ID for ECS tasks"
+  value       = aws_security_group.ecs_tasks_sg.id
+}
+
 output "endpoint_url" {
-  description = "Full HTTP endpoint URL"
-  value       = "http://${aws_lb.fargate_lb.dns_name}"
+  description = "Full HTTPS endpoint URL"
+  value       = "https://${aws_lb.fargate_lb.dns_name}"
 }
 
 output "health_check_url" {
   description = "Health check endpoint URL"
-  value       = "http://${aws_lb.fargate_lb.dns_name}/health"
+  value       = "https://${aws_lb.fargate_lb.dns_name}/health"
+}
+
+output "http_redirect_info" {
+  description = "HTTP requests are automatically redirected to HTTPS"
+  value       = "HTTP requests to http://${aws_lb.fargate_lb.dns_name} will be redirected to https://${aws_lb.fargate_lb.dns_name}"
+}
+
+output "ecr_repository_url" {
+  description = "URL of the ECR repository"
+  value       = aws_ecr_repository.ai_gateway.repository_url
+}
+
+output "ecr_repository_arn" {
+  description = "ARN of the ECR repository"
+  value       = aws_ecr_repository.ai_gateway.arn
+}
+
+output "secrets_manager_secret_arn" {
+  description = "ARN of the AWS Secrets Manager secret being used"
+  value       = data.aws_secretsmanager_secret.cloud_secrets.arn
+}
+
+output "secrets_manager_secret_name" {
+  description = "Name of the AWS Secrets Manager secret being used"
+  value       = var.secrets_manager_secret_name
+}
+
+output "secrets_manager_region" {
+  description = "AWS region where the secrets manager secret is stored"
+  value       = var.secrets_region
+}
+
+output "vpc_id" {
+  description = "VPC ID where ECS is deployed"
+  value       = data.aws_vpc.default.id
+}
+
+output "subnet_ids" {
+  description = "Subnet IDs where ECS tasks run"
+  value       = data.aws_subnets.default.ids
 } 
