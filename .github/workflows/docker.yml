@@ -30,9 +30,8 @@ jobs:
         with:
           # list of Docker images to use as base name for tags
           images: |
-            helicone/ai-gateway
-            ghcr.io/helicone/ai-gateway
-            ${{ vars.ECR_REGISTRY }}/ai-gateway
+            ghcr.io/choronz/gateway
+            # ${{ vars.ECR_REGISTRY }}/ai-gateway
           # generate Docker tags based on the following events/attributes
           tags: |
             type=ref,event=branch
