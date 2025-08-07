@@ -1,12 +1,12 @@
 name: Docker
 
 on:
-  workflow_run:
-    # workflows: ["Rust CI"]
-    types:
-      - completed
-    branches:
-      - main
+  # workflow_run:
+  #   workflows: ["Rust CI"]
+  #   types:
+  #     - completed
+  #   branches:
+  #     - main
   workflow_dispatch:    
   push:
     tags:
